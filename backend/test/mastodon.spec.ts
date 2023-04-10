@@ -2,11 +2,10 @@ import { strict as assert } from 'node:assert/strict'
 import type { Env } from 'wildebeest/backend/src/types/env'
 import * as v1_instance from 'wildebeest/functions/api/v1/instance'
 import * as v2_instance from 'wildebeest/functions/api/v2/instance'
-import * as apps from 'wildebeest/functions/api/v1/apps'
 import * as custom_emojis from 'wildebeest/functions/api/v1/custom_emojis'
 import * as mutes from 'wildebeest/functions/api/v1/mutes'
 import * as blocks from 'wildebeest/functions/api/v1/blocks'
-import { makeDB, assertCORS, assertJSON, assertCache, generateVAPIDKeys } from './utils'
+import { makeDB, assertCORS, assertJSON, assertCache } from './utils'
 import { enrichStatus } from 'wildebeest/backend/src/mastodon/microformats'
 import { moveFollowers } from 'wildebeest/backend/src/mastodon/follow'
 import { createPerson } from 'wildebeest/backend/src/activitypub/actors'
@@ -89,52 +88,6 @@ describe('Mastodon APIs', () => {
 		})
 	})
 
-	describe('apps', () => {
-		test('return the app infos', async () => {
-			const db = await makeDB()
-			const vapidKeys = await generateVAPIDKeys()
-			const request = new Request('https://example.com', {
-				method: 'POST',
-				body: '{"redirect_uris":"mastodon://joinmastodon.org/oauth","website":"https://app.joinmastodon.org/ios","client_name":"Mastodon for iOS","scopes":"read write follow push"}',
-				headers: {
-					'content-type': 'application/json',
-				},
-			})
-
-			const res = await apps.handleRequest(db, request, vapidKeys)
-			assert.equal(res.status, 200)
-			assertCORS(res)
-			assertJSON(res)
-
-			// eslint-disable-next-line @typescript-eslint/no-unused-vars
-			const { name, website, redirect_uri, client_id, client_secret, vapid_key, id, ...rest } = await res.json<
-				Record<string, string>
-			>()
-
-			assert.equal(name, 'Mastodon for iOS')
-			assert.equal(website, 'https://app.joinmastodon.org/ios')
-			assert.equal(redirect_uri, 'mastodon://joinmastodon.org/oauth')
-			assert.equal(id, '20')
-			assert.deepEqual(rest, {})
-		})
-
-		test('returns 404 for GET request', async () => {
-			const vapidKeys = await generateVAPIDKeys()
-			const request = new Request('https://example.com')
-			const ctx: any = {
-				next: () => new Response(),
-				data: null,
-				env: {
-					VAPID_JWK: JSON.stringify(vapidKeys),
-				},
-				request,
-			}
-
-			const res = await apps.onRequest(ctx)
-			assert.equal(res.status, 400)
-		})
-	})
-
 	describe('custom emojis', () => {
 		test('returns an empty array', async () => {
 			const res = await custom_emojis.onRequest()
@@ -167,7 +120,7 @@ describe('Mastodon APIs', () => {
 	})
 
 	describe('Microformats', () => {
-		test('convert mentions to HTML', () => {
+		test('convert mentions to HTML', async () => {
 			const mentionsToTest = [
 				{
 					mention: '@sven2@example.com',
@@ -195,18 +148,34 @@ describe('Mastodon APIs', () => {
 						'<span class="h-card"><a href="https://123456.test.testey.abcdef/@testey" class="u-url mention">@<span>testey</span></a></span>',
 				},
 			]
-			mentionsToTest.forEach(({ mention, expectedMentionSpan }) => {
-				assert.equal(enrichStatus(`hey ${mention} hi`), `<p>hey ${expectedMentionSpan} hi</p>`)
-				assert.equal(enrichStatus(`${mention} hi`), `<p>${expectedMentionSpan} hi</p>`)
-				assert.equal(enrichStatus(`${mention}\n\thein`), `<p>${expectedMentionSpan}\n\thein</p>`)
-				assert.equal(enrichStatus(`hey ${mention}`), `<p>hey ${expectedMentionSpan}</p>`)
-				assert.equal(enrichStatus(`${mention}`), `<p>${expectedMentionSpan}</p>`)
-				assert.equal(enrichStatus(`@!@£${mention}!!!`), `<p>@!@£${expectedMentionSpan}!!!</p>`)
-			})
+
+			for (let i = 0, len = mentionsToTest.length; i < len; i++) {
+				const { mention, expectedMentionSpan } = mentionsToTest[i]
+
+				// List of mentioned actors, only the `id` is required so we can hack together an Actor
+				const mentions: any = [
+					{ id: new URL('https://example.com/sven2') },
+					{ id: new URL('https://example.eng.com/test') },
+					{ id: new URL('https://example.eng.co.uk/test.a.b.c-d') },
+					{ id: new URL('https://123456.abcdef/testey') },
+					{ id: new URL('https://123456.test.testey.abcdef/testey') },
+				]
+
+				assert.equal(enrichStatus(`hey ${mention} hi`, mentions), `<p>hey ${expectedMentionSpan} hi</p>`)
+				assert.equal(enrichStatus(`${mention} hi`, mentions), `<p>${expectedMentionSpan} hi</p>`)
+				assert.equal(enrichStatus(`${mention}\n\thein`, mentions), `<p>${expectedMentionSpan}\n\thein</p>`)
+				assert.equal(enrichStatus(`hey ${mention}`, mentions), `<p>hey ${expectedMentionSpan}</p>`)
+				assert.equal(enrichStatus(`${mention}`, mentions), `<p>${expectedMentionSpan}</p>`)
+				assert.equal(enrichStatus(`@!@£${mention}!!!`, mentions), `<p>@!@£${expectedMentionSpan}!!!</p>`)
+			}
 		})
 
 		test('handle invalid mention', () => {
-			assert.equal(enrichStatus('hey @#-...@example.com'), '<p>hey @#-...@example.com</p>')
+			assert.equal(enrichStatus('hey @#-...@example.com', []), '<p>hey @#-...@example.com</p>')
+		})
+
+		test('mention to invalid user', () => {
+			assert.equal(enrichStatus('hey test@example.com', []), '<p>hey test@example.com</p>')
 		})
 
 		test('convert links to HTML', () => {
@@ -218,16 +187,64 @@ describe('Mastodon APIs', () => {
 				'http://www.cloudflare.co.uk?test=test@123',
 				'http://www.cloudflare.com/.com/?test=test@~123&a=b',
 				'https://developers.cloudflare.com/workers/runtime-apis/request/#background',
+				'https://a.test',
+				'https://a.test/test',
+				'https://a.test/test?test=test',
 			]
 			linksToTest.forEach((link) => {
 				const url = new URL(link)
 				const urlDisplayText = `${url.hostname}${url.pathname}`
-				assert.equal(enrichStatus(`hey ${link} hi`), `<p>hey <a href="${link}">${urlDisplayText}</a> hi</p>`)
-				assert.equal(enrichStatus(`${link} hi`), `<p><a href="${link}">${urlDisplayText}</a> hi</p>`)
-				assert.equal(enrichStatus(`hey ${link}`), `<p>hey <a href="${link}">${urlDisplayText}</a></p>`)
-				assert.equal(enrichStatus(`${link}`), `<p><a href="${link}">${urlDisplayText}</a></p>`)
-				assert.equal(enrichStatus(`@!@£${link}!!!`), `<p>@!@£<a href="${link}">${urlDisplayText}</a>!!!</p>`)
+				assert.equal(enrichStatus(`hey ${link} hi`, []), `<p>hey <a href="${link}">${urlDisplayText}</a> hi</p>`)
+				assert.equal(enrichStatus(`${link} hi`, []), `<p><a href="${link}">${urlDisplayText}</a> hi</p>`)
+				assert.equal(enrichStatus(`hey ${link}`, []), `<p>hey <a href="${link}">${urlDisplayText}</a></p>`)
+				assert.equal(enrichStatus(`${link}`, []), `<p><a href="${link}">${urlDisplayText}</a></p>`)
+				assert.equal(enrichStatus(`@!@£${link}!!!`, []), `<p>@!@£<a href="${link}">${urlDisplayText}</a>!!!</p>`)
 			})
+		})
+
+		test('convert tags to HTML', async () => {
+			const tagsToTest = [
+				{
+					tag: '#test',
+					expectedTagAnchor: '<a href="/tags/test" class="status-link hashtag">#test</a>',
+				},
+				{
+					tag: '#123_joke_123',
+					expectedTagAnchor: '<a href="/tags/123_joke_123" class="status-link hashtag">#123_joke_123</a>',
+				},
+				{
+					tag: '#_123',
+					expectedTagAnchor: '<a href="/tags/_123" class="status-link hashtag">#_123</a>',
+				},
+				{
+					tag: '#example:',
+					expectedTagAnchor: '<a href="/tags/example" class="status-link hashtag">#example</a>:',
+				},
+				{
+					tag: '#tagA#tagB',
+					expectedTagAnchor:
+						'<a href="/tags/tagA" class="status-link hashtag">#tagA</a><a href="/tags/tagB" class="status-link hashtag">#tagB</a>',
+				},
+			]
+
+			for (let i = 0, len = tagsToTest.length; i < len; i++) {
+				const { tag, expectedTagAnchor } = tagsToTest[i]
+
+				assert.equal(enrichStatus(`hey ${tag} hi`, []), `<p>hey ${expectedTagAnchor} hi</p>`)
+				assert.equal(enrichStatus(`${tag} hi`, []), `<p>${expectedTagAnchor} hi</p>`)
+				assert.equal(enrichStatus(`${tag}\n\thein`, []), `<p>${expectedTagAnchor}\n\thein</p>`)
+				assert.equal(enrichStatus(`hey ${tag}`, []), `<p>hey ${expectedTagAnchor}</p>`)
+				assert.equal(enrichStatus(`${tag}`, []), `<p>${expectedTagAnchor}</p>`)
+				assert.equal(enrichStatus(`@!@£${tag}!!!`, []), `<p>@!@£${expectedTagAnchor}!!!</p>`)
+			}
+		})
+
+		test('ignore invalid tags', () => {
+			assert.equal(enrichStatus('tags cannot be empty like: #', []), `<p>tags cannot be empty like: #</p>`)
+			assert.equal(
+				enrichStatus('tags cannot contain only numbers like: #123', []),
+				`<p>tags cannot contain only numbers like: #123</p>`
+			)
 		})
 	})
 

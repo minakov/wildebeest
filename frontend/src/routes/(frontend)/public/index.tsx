@@ -5,20 +5,22 @@ import { DocumentHead, loader$ } from '@builder.io/qwik-city'
 import StickyHeader from '~/components/StickyHeader/StickyHeader'
 import { getDocumentHead } from '~/utils/getDocumentHead'
 import { StatusesPanel } from '~/components/StatusesPanel/StatusesPanel'
+import { getErrorHtml } from '~/utils/getErrorHtml/getErrorHtml'
+import { getDatabase } from 'wildebeest/backend/src/database'
 
-export const statusesLoader = loader$<Promise<MastodonStatus[]>, { DATABASE: D1Database; domain: string }>(
-	async ({ platform, html }) => {
-		try {
-			// TODO: use the "trending" API endpoint here.
-			const response = await timelines.handleRequest(platform.domain, platform.DATABASE)
-			const results = await response.text()
-			// Manually parse the JSON to ensure that Qwik finds the resulting objects serializable.
-			return JSON.parse(results) as MastodonStatus[]
-		} catch {
-			throw html(500, 'The public timeline is unavailable')
-		}
+export const statusesLoader = loader$<Promise<MastodonStatus[]>>(async ({ platform, html }) => {
+	try {
+		// TODO: use the "trending" API endpoint here.
+		const response = await timelines.handleRequest(platform.domain, await getDatabase(platform))
+		const results = await response.text()
+		// Manually parse the JSON to ensure that Qwik finds the resulting objects serializable.
+		return JSON.parse(results) as MastodonStatus[]
+	} catch (e: unknown) {
+		const error = e as { stack: string; cause: string }
+		console.warn(error.stack, error.cause)
+		throw html(500, getErrorHtml('The public timeline is unavailable'))
 	}
-)
+})
 
 export default component$(() => {
 	const statuses = statusesLoader().value
@@ -51,13 +53,10 @@ export default component$(() => {
 	)
 })
 
-export const requestLoader = loader$(async ({ request }) => {
-	// Manually parse the JSON to ensure that Qwik finds the resulting objects serializable.
-	return JSON.parse(JSON.stringify(request)) as Request
-})
+export const requestUrlLoader = loader$(async ({ request }) => request.url)
 
 export const head: DocumentHead = ({ resolveValue }) => {
-	const { url } = resolveValue(requestLoader)
+	const url = resolveValue(requestUrlLoader)
 	return getDocumentHead({
 		title: 'Federated timeline - Wildebeest',
 		og: {

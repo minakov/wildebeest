@@ -6,11 +6,14 @@ import { createReblog } from 'wildebeest/backend/src/mastodon/reblog'
 import { createReply as createReplyInBackend } from 'wildebeest/backend/test/shared.utils'
 import { createStatus } from 'wildebeest/backend/src/mastodon/status'
 import type { APObject } from 'wildebeest/backend/src/activitypub/objects'
+import { type Database } from 'wildebeest/backend/src/database'
+import { upsertRule } from 'wildebeest/backend/src/config/rules'
+import { upsertServerSettings } from 'wildebeest/backend/src/config/server'
 
 /**
  * Run helper commands to initialize the database with actors, statuses, etc.
  */
-export async function init(domain: string, db: D1Database) {
+export async function init(domain: string, db: Database) {
 	const loadedStatuses: { status: MastodonStatus; note: Note }[] = []
 	for (const status of statuses) {
 		const actor = await getOrCreatePerson(domain, db, status.account)
@@ -19,7 +22,8 @@ export async function init(domain: string, db: D1Database) {
 			db,
 			actor,
 			status.content,
-			status.media_attachments as unknown as APObject[]
+			status.media_attachments as unknown as APObject[],
+			{ spoiler_text: status.spoiler_text }
 		)
 		loadedStatuses.push({ status, note })
 	}
@@ -39,6 +43,17 @@ export async function init(domain: string, db: D1Database) {
 	for (const reply of replies) {
 		await createReply(domain, db, reply, loadedStatuses)
 	}
+
+	await createServerData(db)
+}
+
+async function createServerData(db: Database) {
+	await upsertServerSettings(db, {
+		'extended description': 'this is a test wildebeest instance!',
+	})
+	await upsertRule(db, "don't be mean")
+	await upsertRule(db, "don't insult people")
+	await upsertRule(db, 'respect the rules')
 }
 
 /**
@@ -46,7 +61,7 @@ export async function init(domain: string, db: D1Database) {
  */
 async function createReply(
 	domain: string,
-	db: D1Database,
+	db: Database,
 	reply: MastodonStatus,
 	loadedStatuses: { status: MastodonStatus; note: Note }[]
 ) {
@@ -69,15 +84,24 @@ async function createReply(
 
 async function getOrCreatePerson(
 	domain: string,
-	db: D1Database,
+	db: Database,
 	{ username, avatar, display_name }: Account
 ): Promise<Person> {
-	const person = await getPersonByEmail(db, username)
+	const isAdmin = username === 'george'
+	const email = `${username}@test.email`
+	const person = await getPersonByEmail(db, email)
 	if (person) return person
-	const newPerson = await createPerson(domain, db, 'test-kek', username, {
-		icon: { url: avatar },
-		name: display_name,
-	})
+	const newPerson = await createPerson(
+		domain,
+		db,
+		'test-kek',
+		email,
+		{
+			icon: { url: avatar },
+			name: display_name,
+		},
+		isAdmin
+	)
 	if (!newPerson) {
 		throw new Error('Could not create Actor ' + username)
 	}

@@ -27,6 +27,7 @@ import type { Activity } from 'wildebeest/backend/src/activitypub/activities'
 import { originalActorIdSymbol, deleteObject } from 'wildebeest/backend/src/activitypub/objects'
 import { hasReblog } from 'wildebeest/backend/src/mastodon/reblog'
 import { getMetadata, loadItems } from 'wildebeest/backend/src/activitypub/objects/collection'
+import { type Database } from 'wildebeest/backend/src/database'
 
 function extractID(domain: string, s: string | URL): string {
 	return s.toString().replace(`https://${domain}/ap/users/`, '')
@@ -87,7 +88,7 @@ export function makeGetActorAsId(activity: Activity) {
 export async function handle(
 	domain: string,
 	activity: Activity,
-	db: D1Database,
+	db: Database,
 	userKEK: string,
 	adminEmail: string,
 	vapidKeys: JWK
@@ -115,7 +116,7 @@ export async function handle(
 			}
 
 			// check current object
-			const object = await objects.getObjectBy(db, 'original_object_id', objectId.toString())
+			const object = await objects.getObjectBy(db, objects.ObjectByKey.originalObjectId, objectId.toString())
 			if (object === null) {
 				throw new Error(`object ${objectId} does not exist`)
 			}
@@ -386,37 +387,31 @@ export async function handle(
 				break
 			}
 
+			// FIXME: Requires alsoKnownAs to be set in both directions
+
 			// move followers
 			{
 				const collection = await getMetadata(fromActor.followers)
-				collection.items = await loadItems(collection)
+				collection.items = await loadItems<string>(collection)
 
 				// TODO: eventually move to queue and move workers
 				while (collection.items.length > 0) {
 					const batch = collection.items.splice(0, 20)
-					await Promise.all(
-						batch.map(async (items) => {
-							await moveFollowers(db, localActor, items)
-							console.log(`moved ${items.length} followers`)
-						})
-					)
+					await moveFollowers(db, localActor, batch)
+					console.log(`moved ${batch.length} followers`)
 				}
 			}
 
 			// move following
 			{
 				const collection = await getMetadata(fromActor.following)
-				collection.items = await loadItems(collection)
+				collection.items = await loadItems<string>(collection)
 
 				// TODO: eventually move to queue and move workers
 				while (collection.items.length > 0) {
 					const batch = collection.items.splice(0, 20)
-					await Promise.all(
-						batch.map(async (items) => {
-							await moveFollowing(db, localActor, items)
-							console.log(`moved ${items.length} following`)
-						})
-					)
+					await moveFollowing(db, localActor, batch)
+					console.log(`moved ${batch.length} following`)
 				}
 			}
 
@@ -431,7 +426,7 @@ export async function handle(
 async function cacheObject(
 	domain: string,
 	obj: APObject,
-	db: D1Database,
+	db: Database,
 	originalActorId: URL,
 	originalObjectId: URL
 ): Promise<{ created: boolean; object: APObject } | null> {

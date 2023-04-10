@@ -9,11 +9,9 @@ import { WildebeestLogo } from '~/components/MastodonLogo'
 import { getCommitHash } from '~/utils/getCommitHash'
 import { InstanceConfigContext } from '~/utils/instanceConfig'
 import { getDocumentHead } from '~/utils/getDocumentHead'
+import { getErrorHtml } from '~/utils/getErrorHtml/getErrorHtml'
 
-export const instanceLoader = loader$<
-	Promise<InstanceConfig>,
-	{ DATABASE: D1Database; INSTANCE_TITLE: string; INSTANCE_DESCR: string; ADMIN_EMAIL: string }
->(async ({ platform, html }) => {
+export const instanceLoader = loader$<Promise<InstanceConfig>>(async ({ platform, html }) => {
 	const env = {
 		INSTANCE_DESCR: platform.INSTANCE_DESCR,
 		INSTANCE_TITLE: platform.INSTANCE_TITLE,
@@ -24,8 +22,10 @@ export const instanceLoader = loader$<
 		const results = await response.text()
 		const json = JSON.parse(results) as InstanceConfig
 		return json
-	} catch {
-		throw html(500, 'An error occurred whilst retrieving the instance details')
+	} catch (e: unknown) {
+		const error = e as { stack: string; cause: string }
+		console.warn(error.stack, error.cause)
+		throw html(500, getErrorHtml('An error occurred whilst retrieving the instance details'))
 	}
 })
 
@@ -40,13 +40,13 @@ export default component$(() => {
 					<WildebeestLogo size="small" />
 				</Link>
 			</header>
-			<main class="flex-1 flex justify-center top-[3.9rem]">
+			<main class="flex-1 flex justify-center top-[3.9rem] max-w-screen">
 				<div class="w-fit md:w-72 hidden xl:block mx-2.5">
 					<div class="sticky top-2.5">
 						<LeftColumn />
 					</div>
 				</div>
-				<div class="w-full xl:max-w-xl bg-wildebeest-600 xl:bg-transparent flex flex-col break-all sm:break-normal">
+				<div class="w-0 xl:max-w-xl bg-wildebeest-600 xl:bg-transparent flex flex-col flex-1">
 					<div class="bg-wildebeest-600 rounded flex flex-1 flex-col">
 						<Slot />
 					</div>
